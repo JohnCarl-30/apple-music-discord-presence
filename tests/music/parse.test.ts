@@ -78,6 +78,36 @@ describe("parseNowPlaying", () => {
     expect(np?.positionSec).toBe(0);
   });
 
+  // I4: AppleScript returns the literal string "missing value" for an unset
+  // property, which is not an error, so the script's try blocks never fire.
+  // An unset duration previously made the whole sample unparseable, clearing
+  // the presence on every poll with nothing in the log.
+  it("treats a missing-value duration as unknown rather than discarding the track", () => {
+    const np = parseNowPlaying(row("playing", "ID", "T", "A", "Al", "missing value", "10"));
+    expect(np).not.toBeNull();
+    expect(np?.durationSec).toBe(0);
+    expect(np?.positionSec).toBe(10);
+  });
+
+  it("treats a missing-value position as zero", () => {
+    const np = parseNowPlaying(row("playing", "ID", "T", "A", "Al", "100", "missing value"));
+    expect(np?.positionSec).toBe(0);
+  });
+
+  it("blanks missing-value text fields instead of showing them to the user", () => {
+    const np = parseNowPlaying(row("playing", "missing value", "T", "missing value", "missing value", "1", "0"));
+    expect(np?.artist).toBe("");
+    expect(np?.album).toBe("");
+    expect(np?.persistentId).toBe("");
+  });
+
+  // Same one-line cause: `real as text` honours the system decimal separator.
+  it("accepts a comma decimal separator from a non-English locale", () => {
+    const np = parseNowPlaying(row("playing", "ID", "T", "A", "Al", "336,046", "207,643"));
+    expect(np?.durationSec).toBeCloseTo(336.046, 3);
+    expect(np?.positionSec).toBeCloseTo(207.643, 3);
+  });
+
   it("keeps titles that contain the characters the sanitiser targets", () => {
     // The AppleScript replaces these before we ever see them, but a title with
     // legitimate spaces and ampersands must survive untouched.

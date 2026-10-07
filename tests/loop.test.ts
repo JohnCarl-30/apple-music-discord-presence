@@ -180,6 +180,48 @@ describe("PresenceLoop.tick", () => {
     await expect(loop.tick()).rejects.toBeInstanceOf(NotAuthorizedError);
   });
 
+  // C2: after a failed publish the loop must re-offer current state, otherwise
+  // steady playback means nothing is ever submitted again.
+  it("republishes unchanged state after invalidate", async () => {
+    const submitted: Array<Activity | null> = [];
+    const loop = new PresenceLoop({
+      source: { read: vi.fn().mockResolvedValue(track()) },
+      artwork: { get: vi.fn().mockResolvedValue(null) },
+      submit: (a) => submitted.push(a),
+      logger: silent,
+    });
+    await loop.tick();
+    await loop.tick();
+    expect(submitted).toHaveLength(1);
+    loop.invalidate();
+    await loop.tick();
+    expect(submitted).toHaveLength(2);
+  });
+
+  // I7: losing Automation permission mid-session must clear the presence and
+  // exit, not leave a frozen presence on a process that polls nothing.
+  it("clears the presence and reports fatal when authorization is lost mid-session", async () => {
+    const submitted: Array<Activity | null> = [];
+    const fatal: Error[] = [];
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce(track())
+      .mockRejectedValue(new NotAuthorizedError());
+    const loop = new PresenceLoop({
+      source: { read },
+      artwork: { get: vi.fn().mockResolvedValue(null) },
+      submit: (a) => submitted.push(a),
+      logger: silent,
+      onFatal: (e) => fatal.push(e),
+    });
+    await loop.tick();
+    await expect(loop.tick()).rejects.toBeInstanceOf(NotAuthorizedError);
+    loop.handleFatal(new NotAuthorizedError());
+    expect(submitted[submitted.length - 1]).toBeNull();
+    expect(fatal).toHaveLength(1);
+    expect(fatal[0]).toBeInstanceOf(NotAuthorizedError);
+  });
+
   it("still submits when the artwork lookup fails", async () => {
     const submitted: Array<Activity | null> = [];
     const loop = new PresenceLoop({

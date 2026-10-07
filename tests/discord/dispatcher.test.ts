@@ -104,6 +104,43 @@ describe("CoalescingDispatcher", () => {
     expect(send).toHaveBeenLastCalledWith("final");
   });
 
+  // I6: shutdown must not race an in-flight send, or a stale presence can be
+  // written after the clear and then outlive the socket.
+  it("flushNow awaits a send that is already in flight", async () => {
+    let settled = false;
+    const send = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 5000));
+      settled = true;
+    });
+    const d = new CoalescingDispatcher(send, 15_000);
+    d.submit("a");
+    await vi.advanceTimersByTimeAsync(0);
+    const flushed = d.flushNow();
+    let resolvedEarly = false;
+    void flushed.then(() => {
+      resolvedEarly = !settled;
+    });
+    await vi.advanceTimersByTimeAsync(5000);
+    await flushed;
+    expect(settled).toBe(true);
+    expect(resolvedEarly).toBe(false);
+  });
+
+  it("drain awaits an in-flight send", async () => {
+    let settled = false;
+    const send = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 5000));
+      settled = true;
+    });
+    const d = new CoalescingDispatcher(send, 15_000);
+    d.submit("a");
+    await vi.advanceTimersByTimeAsync(0);
+    const drained = d.drain();
+    await vi.advanceTimersByTimeAsync(5000);
+    await drained;
+    expect(settled).toBe(true);
+  });
+
   it("stop discards pending work and cancels the timer", async () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const d = new CoalescingDispatcher(send, 15_000);

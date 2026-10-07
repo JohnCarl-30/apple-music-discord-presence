@@ -153,7 +153,8 @@ describe("RpcPresenceSink", () => {
       setActivity: vi.fn().mockRejectedValue(new Error("write EPIPE")),
     });
     const sink = new RpcPresenceSink({ clientId: "1", createClient: () => client, logger: silent });
-    await expect(sink.set(activity)).resolves.toBeUndefined();
+    // Swallows the failure AND reports that the write did not land.
+    await expect(sink.set(activity)).resolves.toBe(false);
     expect(client.destroy).toHaveBeenCalled();
   });
 
@@ -191,7 +192,7 @@ describe("RpcPresenceSink", () => {
   it("swallows a login failure", async () => {
     const client = fakeClient({ login: vi.fn().mockRejectedValue(new Error("ENOENT")) });
     const sink = new RpcPresenceSink({ clientId: "1", createClient: () => client, logger: silent });
-    await expect(sink.set(activity)).resolves.toBeUndefined();
+    await expect(sink.set(activity)).resolves.toBe(false);
   });
 
   it("close destroys the client and is safe to call twice", async () => {
@@ -201,6 +202,72 @@ describe("RpcPresenceSink", () => {
     await sink.close();
     await sink.close();
     expect(client.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  // C2 / FR6: "republishes current state on reconnect". Without this the
+  // presence stays dead until the track changes, which for a 5-minute track
+  // means minutes of blank profile after Discord restarts.
+  it("republishes the last activity once a reconnect succeeds", async () => {
+    const dead = fakeClient({ setActivity: vi.fn().mockRejectedValue(new Error("EPIPE")) });
+    const live = fakeClient();
+    const clients = [dead, live];
+    const sink = new RpcPresenceSink({
+      clientId: "1",
+      createClient: () => clients.shift() ?? live,
+      logger: silent,
+      random: () => 0.5,
+    });
+    await sink.set(activity);
+    await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS + 1);
+    // A bare clear-less reconnect attempt must restore the presence.
+    await sink.reconnectIfNeeded();
+    expect(live.setActivity).toHaveBeenCalledWith(activity);
+  });
+
+  it("does not republish when nothing was ever published", async () => {
+    const client = fakeClient();
+    const sink = new RpcPresenceSink({ clientId: "1", createClient: () => client, logger: silent });
+    await sink.reconnectIfNeeded();
+    expect(client.setActivity).not.toHaveBeenCalled();
+  });
+
+  it("forgets the last activity after a clear, so a reconnect does not resurrect it", async () => {
+    const client = fakeClient();
+    const sink = new RpcPresenceSink({ clientId: "1", createClient: () => client, logger: silent });
+    await sink.set(activity);
+    await sink.clear();
+    (client.setActivity as ReturnType<typeof vi.fn>).mockClear();
+    await sink.reconnectIfNeeded();
+    expect(client.setActivity).not.toHaveBeenCalled();
+  });
+
+  // I8: --once must not report success for a run that published nothing.
+  it("reports whether the write landed", async () => {
+    const good = fakeClient();
+    const okSink = new RpcPresenceSink({ clientId: "1", createClient: () => good, logger: silent });
+    await expect(okSink.set(activity)).resolves.toBe(true);
+
+    const bad = fakeClient({ setActivity: vi.fn().mockRejectedValue(new Error("EPIPE")) });
+    const badSink = new RpcPresenceSink({ clientId: "1", createClient: () => bad, logger: silent });
+    await expect(badSink.set(activity)).resolves.toBe(false);
+  });
+
+  it("reports false when it cannot even connect", async () => {
+    const client = fakeClient({ login: vi.fn().mockRejectedValue(new Error("ENOENT")) });
+    const sink = new RpcPresenceSink({ clientId: "1", createClient: () => client, logger: silent });
+    await expect(sink.set(activity)).resolves.toBe(false);
+  });
+
+  it("reports false while inside the backoff window", async () => {
+    const dead = fakeClient({ setActivity: vi.fn().mockRejectedValue(new Error("EPIPE")) });
+    const sink = new RpcPresenceSink({
+      clientId: "1",
+      createClient: () => dead,
+      logger: silent,
+      random: () => 0.5,
+    });
+    await sink.set(activity);
+    await expect(sink.set(activity)).resolves.toBe(false);
   });
 
   it("ignores updates submitted after close", async () => {

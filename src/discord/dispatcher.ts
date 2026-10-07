@@ -12,6 +12,7 @@ export class CoalescingDispatcher<T> {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private sending = false;
   private stopped = false;
+  private inFlight: Promise<void> | null = null;
 
   constructor(
     private readonly send: (value: T) => Promise<void>,
@@ -31,6 +32,17 @@ export class CoalescingDispatcher<T> {
       this.timer = null;
     }
     await this.flush();
+    // flush() returns immediately if a send was already in flight, so wait for
+    // that one too: a shutdown that races an in-flight write can otherwise
+    // land a stale presence AFTER the clear and then destroy the socket.
+    await this.drain();
+  }
+
+  /** Resolve once no send is in flight. */
+  async drain(): Promise<void> {
+    while (this.inFlight !== null) {
+      await this.inFlight;
+    }
   }
 
   stop(): void {
@@ -60,14 +72,19 @@ export class CoalescingDispatcher<T> {
     this.sending = true;
     // Stamped before awaiting so a slow send does not shrink the next window.
     this.lastSentAt = Date.now();
-    try {
-      await this.send(value);
-    } catch {
-      // The sink logs and reconnects; a dropped update is not fatal because
-      // the next poll will resubmit current state.
-    } finally {
-      this.sending = false;
-      this.schedule();
-    }
+    const inFlight = (async () => {
+      try {
+        await this.send(value);
+      } catch {
+        // The sink logs and reconnects; a dropped update is not fatal because
+        // the next poll will resubmit current state.
+      } finally {
+        this.sending = false;
+        this.inFlight = null;
+        this.schedule();
+      }
+    })();
+    this.inFlight = inFlight;
+    await inFlight;
   }
 }

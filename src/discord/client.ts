@@ -5,11 +5,16 @@ import type { Activity } from "../types.js";
 export const INITIAL_BACKOFF_MS = 1000;
 export const MAX_BACKOFF_MS = 60_000;
 
-/** Where presence goes. Implementations must never throw. */
+/**
+ * Where presence goes. Implementations must never throw; `set`/`clear` report
+ * whether the write actually landed so callers can retry or exit non-zero.
+ */
 export interface PresenceSink {
-  set(activity: Activity): Promise<void>;
-  clear(): Promise<void>;
+  set(activity: Activity): Promise<boolean>;
+  clear(): Promise<boolean>;
   close(): Promise<void>;
+  /** Re-establish a dropped connection and restore the last activity. */
+  reconnectIfNeeded(): Promise<void>;
 }
 
 /** The slice of the RPC client we use, so tests can substitute it. */
@@ -72,6 +77,8 @@ export interface RpcPresenceSinkOptions {
 
 export class RpcPresenceSink implements PresenceSink {
   private client: RpcClientLike | null = null;
+  /** Retained so a reconnect can restore the presence (FR6). */
+  private lastActivity: Activity | null = null;
   private attempt = 0;
   private nextAttemptAt = 0;
   private closed = false;
@@ -87,23 +94,49 @@ export class RpcPresenceSink implements PresenceSink {
       (() => adaptRpcClient(new Client({ clientId: options.clientId }) as unknown as RpcClientWithUser));
   }
 
-  async set(activity: Activity): Promise<void> {
-    if (this.closed) return;
+  async set(activity: Activity): Promise<boolean> {
+    if (this.closed) return false;
+    this.lastActivity = activity;
     const client = await this.connect();
-    if (client === null) return;
+    if (client === null) return false;
     try {
       await client.setActivity(activity);
+      return true;
     } catch (error) {
       await this.handleFailure(error);
+      return false;
     }
   }
 
-  async clear(): Promise<void> {
+  async clear(): Promise<boolean> {
+    this.lastActivity = null;
     // Nothing to clear if we never connected; connecting just to clear would
-    // briefly show a presence we are trying to remove.
-    if (this.closed || this.client === null) return;
+    // briefly show a presence we are trying to remove. The desired state is
+    // already achieved, so this counts as success.
+    if (this.closed || this.client === null) return true;
     try {
       await this.client.clearActivity();
+      return true;
+    } catch (error) {
+      await this.handleFailure(error);
+      return false;
+    }
+  }
+
+  /**
+   * FR6: "republishes current state on reconnect."
+   *
+   * Driven on a watchdog interval so recovery does not depend on the user
+   * happening to change track — steady playback produces no updates, so
+   * without this the presence would stay blank until the track ended.
+   */
+  async reconnectIfNeeded(): Promise<void> {
+    if (this.closed || this.client !== null || this.lastActivity === null) return;
+    const client = await this.connect();
+    if (client === null) return;
+    try {
+      await client.setActivity(this.lastActivity);
+      this.logger.info("restored presence after reconnect");
     } catch (error) {
       await this.handleFailure(error);
     }
@@ -116,7 +149,10 @@ export class RpcPresenceSink implements PresenceSink {
 
   private async connect(): Promise<RpcClientLike | null> {
     if (this.client !== null) return this.client;
-    if (Date.now() < this.nextAttemptAt) return null;
+    if (Date.now() < this.nextAttemptAt) {
+      this.logger.info("skipping Discord update: inside backoff window");
+      return null;
+    }
 
     const client = this.createClient();
     try {

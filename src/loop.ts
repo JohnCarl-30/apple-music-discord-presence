@@ -43,6 +43,8 @@ export interface PresenceLoopOptions {
   logger?: Logger;
   pollIntervalMs?: number;
   now?: () => number;
+  /** Called for a failure that will never fix itself, after the presence is cleared. */
+  onFatal?: (error: Error) => void;
 }
 
 export class PresenceLoop {
@@ -101,6 +103,25 @@ export class PresenceLoop {
     }
   }
 
+  /**
+   * Forget the last observation so the next tick republishes current state.
+   *
+   * Steady playback produces no updates by design, so after a failed publish
+   * there would otherwise be nothing to re-send until the track changed —
+   * leaving the presence blank for the rest of a long track.
+   */
+  invalidate(): void {
+    this.last = null;
+    this.lastSampleAt = null;
+  }
+
+  /** Clear the presence, stop polling, and hand the error up. */
+  handleFatal(error: Error): void {
+    this.stop();
+    this.options.submit(null);
+    this.options.onFatal?.(error);
+  }
+
   start(): void {
     if (this.timer !== null) return;
     const run = (): void => {
@@ -111,8 +132,8 @@ export class PresenceLoop {
         .catch((error: unknown) => {
           this.logger.error(error instanceof Error ? error.message : String(error));
           if (error instanceof NotAuthorizedError) {
-            this.stop();
-            process.exitCode = 1;
+            // Do not leave a frozen presence on a process that polls nothing.
+            this.handleFatal(error);
           }
         })
         .finally(() => {
