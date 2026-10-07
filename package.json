@@ -6,14 +6,20 @@
   "bin": {
     "apple-music-discord-presence": "./dist/cli.js"
   },
-  "files": ["dist", "scripts", "README.md"],
-  "engines": { "node": ">=20" },
+  "files": [
+    "dist",
+    "scripts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "start": "node --experimental-strip-types src/cli.ts"
+    "start": "npm run build && node dist/cli.js"
   },
   "dependencies": {
     "@xhayper/discord-rpc": "^1.1.2"
