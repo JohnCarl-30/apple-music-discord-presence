@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.github.apple-music-discord-presence</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__NODE__</string>
+		<string>__INSTALL_DIR__/dist/cli.js</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>DISCORD_CLIENT_ID</key>
+		<string>__CLIENT_ID__</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/apple-music-discord-presence.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/apple-music-discord-presence.log</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>
